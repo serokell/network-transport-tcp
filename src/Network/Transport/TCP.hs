@@ -760,6 +760,7 @@ apiConnect params ourEndPoint theirAddress _reliability hints =
         return Connection
           { send  = apiSend  (ourEndPoint, theirEndPoint) connId connAlive
           , close = apiClose (ourEndPoint, theirEndPoint) connId connAlive
+          , bundle = remoteId theirEndPoint
           }
 
 -- | Close a connection
@@ -1098,7 +1099,7 @@ handleIncomingMessages params (ourEndPoint, theirEndPoint) = do
                     -- report the endpoint as gone if we have any outgoing
                     -- connections
                     when (vst ^. remoteOutgoing > 0) $ do
-                      let code = EventConnectionLost (remoteAddress theirEndPoint)
+                      let code = EventConnectionLost (remoteAddress theirEndPoint) (remoteId theirEndPoint)
                       qdiscEnqueue' ourQueue theirAddr . ErrorEvent $
                         TransportError code "The remote endpoint was closed."
               removeRemoteEndPoint (ourEndPoint, theirEndPoint)
@@ -1253,7 +1254,7 @@ handleIncomingMessages params (ourEndPoint, theirEndPoint) = do
               else do
                 -- Release probing resources if probing.
                 when (vst ^. remoteOutgoing > 0) $ do
-                  let code = EventConnectionLost (remoteAddress theirEndPoint)
+                  let code = EventConnectionLost (remoteAddress theirEndPoint) (remoteId theirEndPoint)
                   let msg  = "socket closed prematurely by peer"
                   qdiscEnqueue' ourQueue theirAddr . ErrorEvent $ TransportError code msg
                 forM_ (remoteProbing vst) id
@@ -1312,7 +1313,7 @@ handleIncomingMessages params (ourEndPoint, theirEndPoint) = do
           RemoteEndPointValid vst -> do
             -- Release probing resources if probing.
             forM_ (remoteProbing vst) id
-            let code = EventConnectionLost (remoteAddress theirEndPoint)
+            let code = EventConnectionLost (remoteAddress theirEndPoint) (remoteId theirEndPoint)
             qdiscEnqueue' ourQueue theirAddr . ErrorEvent $ TransportError code (show err)
             return (RemoteEndPointFailed err)
           RemoteEndPointClosing resolved vst -> do
@@ -1332,7 +1333,7 @@ handleIncomingMessages params (ourEndPoint, theirEndPoint) = do
             modifyMVar_ ourState $ \st' -> case st' of
               LocalEndPointClosed -> return st'
               LocalEndPointValid _ -> do
-                let code = EventConnectionLost (remoteAddress theirEndPoint)
+                let code = EventConnectionLost (remoteAddress theirEndPoint) (remoteId theirEndPoint)
                     err  = TransportError code (show err')
                 qdiscEnqueue' ourQueue theirAddr (ErrorEvent err)
                 return st'
@@ -1571,6 +1572,7 @@ connectToSelf ourEndPoint = do
     return Connection
       { send  = selfSend connAlive connId
       , close = selfClose connAlive connId
+      , bundle = heavyweightSelfConnectionId
       }
   where
     selfSend :: IORef Bool
