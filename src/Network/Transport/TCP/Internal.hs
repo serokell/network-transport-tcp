@@ -17,6 +17,7 @@ module Network.Transport.TCP.Internal
   , EndPointId
   , encodeEndPointAddress
   , decodeEndPointAddress
+  , randomEndPointAddress
   ) where
 
 #if ! MIN_VERSION_base(4,6,0)
@@ -67,7 +68,7 @@ import qualified Network.Transport.TCP.Mock.Socket.ByteString as NBS (recv)
 import qualified Network.Socket.ByteString as NBS (recv)
 #endif
 
-import Data.Word (Word32)
+import Data.Word (Word32, Word64)
 
 import Control.Monad (forever, when)
 import Control.Exception (SomeException, catch, bracketOnError, throwIO, mask_)
@@ -95,7 +96,11 @@ import Data.Word (Word32)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS (length, concat, null)
 import Data.ByteString.Lazy.Internal (smallChunkSize)
+import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Char8 as BSC (unpack, pack)
+import Data.ByteString.Builder (word64BE, toLazyByteString)
+import Data.Monoid ((<>))
+import System.Random.MWC
 
 -- | Local identifier for an endpoint within this transport
 type EndPointId = Word32
@@ -161,6 +166,18 @@ encodeConnectionRequestResponse crr = case crr of
   ConnectionRequestInvalid      -> 1
   ConnectionRequestCrossed      -> 2
   ConnectionRequestHostMismatch -> 3
+
+-- | Generate an EndPointAddress which does not encode a host/port/endpointid.
+-- Such addresses are used for unreachable endpoints, and for ephemeral
+-- addresses when such endpoints establish new heavyweight connections.
+randomEndPointAddress :: IO EndPointAddress
+randomEndPointAddress = do
+  (w64a, w64b) <- withSystemRandom $ \gen -> do
+    w64a <- uniform gen :: IO Word64
+    w64b <- uniform gen :: IO Word64
+    return (w64a, w64b)
+  let bs = toStrict . toLazyByteString $ word64BE w64a <> word64BE w64b
+  return $ EndPointAddress bs
 
 -- | Start a server at the specified address.
 --

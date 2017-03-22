@@ -62,6 +62,7 @@ import Network.Transport.TCP.Internal
   , EndPointId
   , encodeEndPointAddress
   , decodeEndPointAddress
+  , randomEndPointAddress
   )
 import Network.Transport.Internal
   ( prependLength
@@ -278,11 +279,21 @@ import qualified Data.ByteString as BS (length)
 --   about the state (ValidTransportState, ValidLocalEndPointState,
 --   ValidRemoteEndPointState).
 
-data TCPTransport = TCPTransport
+-- | Information about the network addresses of a transport: the external
+-- host/port as well as the bound host/port, which are not necessarily the
+-- same.
+data TransportAddrInfo = TransportAddrInfo
   { transportHost     :: !N.HostName
   , transportPort     :: !N.ServiceName
   , transportBindHost :: !N.HostName
   , transportBindPort :: !N.ServiceName
+  }
+
+data TCPTransport = TCPTransport
+  { transportAddrInfo :: !(Maybe TransportAddrInfo)
+    -- ^ This is 'Nothing' in case the transport is not addressable from the
+    -- network: peers cannot connect to it unless it has a connection to the
+    -- peer.
   , transportState    :: !(MVar TransportState)
   , transportParams   :: !TCPParameters
   }
@@ -292,16 +303,17 @@ data TransportState =
   | TransportClosed
 
 data ValidTransportState = ValidTransportState
-  { _localEndPoints :: !(Map EndPointAddress LocalEndPoint)
+  { _localEndPoints :: !(Map EndPointId LocalEndPoint)
   , _nextEndPointId :: !EndPointId
   }
 
 data LocalEndPoint = LocalEndPoint
-  { localAddress :: !EndPointAddress
-  , localState   :: !(MVar LocalEndPointState)
+  { localAddress    :: !EndPointAddress
+  , localEndPointId :: !EndPointId
+  , localState      :: !(MVar LocalEndPointState)
     -- | A 'QDisc' is held here rather than on the 'ValidLocalEndPointState'
     --   because even closed 'LocalEndPoint's can have queued input data.
-  , localQueue   :: !(QDisc Event)
+  , localQueue      :: !(QDisc Event)
   }
 
 data LocalEndPointState =
@@ -512,7 +524,7 @@ data TCPParameters = TCPParameters {
 -- | Internal functionality we expose for unit testing
 data TransportInternals = TransportInternals
   { -- | The ID of the thread that listens for new incoming connections
-    transportThread     :: ThreadId
+    transportThread     :: Maybe ThreadId
     -- | A variant of newEndPoint in which the QDisc determined by the
     -- transport's TCPParameters can be optionally overridden.
   , newEndPointInternal :: (forall t . Maybe (QDisc t))
@@ -528,74 +540,79 @@ data TransportInternals = TransportInternals
 --------------------------------------------------------------------------------
 
 -- | Create a TCP transport
-createTransport :: N.HostName    -- ^ Bind host name.
-                -> N.ServiceName -- ^ Bind port.
-                -> (N.ServiceName -> (N.HostName, N.ServiceName))
-                   -- ^ External address host name and port, computed from the
-                   --   actual bind port.
-                -> TCPParameters
-                -> IO (Either IOException Transport)
-createTransport bindHost bindPort mkExternal params =
-  either Left (Right . fst) <$>
-    createTransportExposeInternals bindHost bindPort mkExternal params
+createTransport
+  :: Maybe (N.HostName, N.ServiceName, N.ServiceName -> (N.HostName, N.ServiceName))
+  -> TCPParameters
+  -> IO (Either IOException Transport)
+createTransport addrInfo params =
+  either Left (Right . fst) <$> createTransportExposeInternals addrInfo params
 
 -- | You should probably not use this function (used for unit testing only)
 createTransportExposeInternals
-  :: N.HostName
-  -> N.ServiceName
-  -> (N.ServiceName -> (N.HostName, N.ServiceName))
+  :: Maybe (N.HostName, N.ServiceName, N.ServiceName -> (N.HostName, N.ServiceName))
   -> TCPParameters
   -> IO (Either IOException (Transport, TransportInternals))
-createTransportExposeInternals bindHost bindPort mkExternal params = do
+createTransportExposeInternals addrInfo params = do
     state <- newMVar . TransportValid $ ValidTransportState
       { _localEndPoints = Map.empty
       , _nextEndPointId = 0
       }
-    tryIO $ mdo
-       when ( isJust (tcpUserTimeout params) &&
-              not (N.isSupportedSocketOption N.UserTimeout)
-            ) $
-         throwIO $ userError $ "Network.Transport.TCP.createTransport: " ++
-                               "the parameter tcpUserTimeout is unsupported " ++
-                               "in this system."
-       -- We don't know for sure the actual port 'forkServer' binded until it
-       -- completes (see description of 'forkServer'), yet we need the port to
-       -- construct a transport. So we tie a recursive knot.
-       (port', result) <- do
-         let (externalHost, externalPort) = mkExternal port'
-         let transport = TCPTransport { transportState    = state
-                                      , transportHost     = externalHost
-                                      , transportPort     = externalPort
-                                      , transportBindHost = bindHost
-                                      , transportBindPort = port'
-                                      , transportParams   = params
-                                      }
-         bracketOnError (forkServer
-                             bindHost
-                             bindPort
-                             (tcpBacklog params)
-                             (tcpReuseServerAddr params)
-                             (errorHandler transport)
-                             (terminationHandler transport)
-                             (handleConnectionRequest transport))
-                      (\(_port', tid) -> killThread tid)
-                      (\(port'', tid) -> (port'',) <$> mkTransport transport tid)
-       return result
+    case addrInfo of
+
+      Nothing ->
+        let transport = TCPTransport { transportState    = state
+                                     , transportAddrInfo = Nothing
+                                     , transportParams   = params
+                                     }
+        in  fmap Right (mkTransport transport Nothing)
+
+      Just (bindHost, bindPort, mkExternal) -> tryIO $ mdo
+        when ( isJust (tcpUserTimeout params) &&
+               not (N.isSupportedSocketOption N.UserTimeout)
+             ) $
+          throwIO $ userError $ "Network.Transport.TCP.createTransport: " ++
+                                "the parameter tcpUserTimeout is unsupported " ++
+                                "in this system."
+        -- We don't know for sure the actual port 'forkServer' binded until it
+        -- completes (see description of 'forkServer'), yet we need the port to
+        -- construct a transport. So we tie a recursive knot.
+        (port', result) <- do
+          let (externalHost, externalPort) = mkExternal port'
+          let addrInfo = TransportAddrInfo { transportHost     = externalHost
+                                           , transportPort     = externalPort
+                                           , transportBindHost = bindHost
+                                           , transportBindPort = port'
+                                           }
+          let transport = TCPTransport { transportState    = state
+                                       , transportAddrInfo = Just addrInfo
+                                       , transportParams   = params
+                                       }
+          bracketOnError (forkServer
+                              bindHost
+                              bindPort
+                              (tcpBacklog params)
+                              (tcpReuseServerAddr params)
+                              (errorHandler transport)
+                              (terminationHandler transport)
+                              (handleConnectionRequest transport))
+                       (\(_port', tid) -> killThread tid)
+                       (\(port'', tid) -> (port'',) <$> mkTransport transport (Just tid))
+        return result
   where
     mkTransport :: TCPTransport
-                -> ThreadId
+                -> Maybe ThreadId
                 -> IO (Transport, TransportInternals)
-    mkTransport transport tid = do
+    mkTransport transport mtid = do
       return
         ( Transport
             { newEndPoint = do
                 qdisc <- tcpNewQDisc params
                 apiNewEndPoint transport qdisc
             , closeTransport = let evs = [ EndPointClosed ]
-                               in apiCloseTransport transport (Just tid) evs
+                               in apiCloseTransport transport mtid evs
             }
         , TransportInternals
-            { transportThread     = tid
+            { transportThread     = mtid
             , socketBetween       = internalSocketBetween transport
             , newEndPointInternal = \mqdisc -> case mqdisc of
                 Just qdisc -> apiNewEndPoint transport qdisc
@@ -658,7 +675,7 @@ apiNewEndPoint transport qdisc =
     return EndPoint
       { receive       = qdiscDequeue (localQueue ourEndPoint)
       , address       = localAddress ourEndPoint
-      , connect       = apiConnect (transportParams transport) ourEndPoint
+      , connect       = apiConnect transport ourEndPoint
       , closeEndPoint = let evs = [ EndPointClosed ]
                         in  apiCloseEndPoint transport evs ourEndPoint
       , newMulticastGroup     = return . Left $ newMulticastGroupError
@@ -740,20 +757,20 @@ simpleOnePlaceQDisc = do
     }
 
 -- | Connnect to an endpoint
-apiConnect :: TCPParameters    -- ^ Parameters
+apiConnect :: TCPTransport
            -> LocalEndPoint    -- ^ Local end point
            -> EndPointAddress  -- ^ Remote address
            -> Reliability      -- ^ Reliability (ignored)
            -> ConnectHints     -- ^ Hints
            -> IO (Either (TransportError ConnectErrorCode) Connection)
-apiConnect params ourEndPoint theirAddress _reliability hints =
+apiConnect transport ourEndPoint theirAddress _reliability hints =
   try . asyncWhenCancelled close $
     if localAddress ourEndPoint == theirAddress
       then connectToSelf ourEndPoint
       else do
         resetIfBroken ourEndPoint theirAddress
         (theirEndPoint, connId) <-
-          createConnectionTo params ourEndPoint theirAddress hints
+          createConnectionTo transport ourEndPoint theirAddress hints
         -- connAlive can be an IORef rather than an MVar because it is protected
         -- by the remoteState MVar. We don't need the overhead of locking twice.
         connAlive <- newIORef True
@@ -762,6 +779,8 @@ apiConnect params ourEndPoint theirAddress _reliability hints =
           , close = apiClose (ourEndPoint, theirEndPoint) connId connAlive
           , bundle = remoteId theirEndPoint
           }
+  where
+  params = transportParams transport
 
 -- | Close a connection
 apiClose :: EndPointPair -> LightweightConnectionId -> IORef Bool -> IO ()
@@ -929,34 +948,55 @@ handleConnectionRequest transport socketClosed (sock, sockAddr) = handle handleE
     mAddrInfo <- maybe (fmap Just) System.Timeout.timeout connTimeout $ do
       ourEndPointId <- recvWord32 sock
       let maxAddressLength = tcpMaxAddressLength $ transportParams transport
-      theirAddress <- EndPointAddress . BS.concat <$>
-        recvWithLength maxAddressLength sock
-      return (ourEndPointId, theirAddress)
-    (ourEndPointId, theirAddress) <- case mAddrInfo of
+      addressControlCode <- recvWord32 sock
+      case addressControlCode of
+        0 -> do
+          -- Let the peer tell us their EndPointAddress.
+          let maxAddressLength = tcpMaxAddressLength $ transportParams transport
+          theirAddress <- EndPointAddress . BS.concat <$>
+            recvWithLength maxAddressLength sock
+          (theirHost, theirPort, theirEndPointId)
+            <- maybe (throwIO (userError "handleConnectionRequest: peer gave malformed address"))
+                     return
+                     (decodeEndPointAddress theirAddress)
+          -- If the OS-determined host doesn't match the host that the peer gave us,
+          -- then we have no choice but to reject the connection. It's because we
+          -- use the EndPointAddress to key the remote end points (localConnections)
+          -- and we don't want to allow a peer to deny service to other peers by
+          -- claiming to have their host and port.
+          return (ourEndPointId, Right theirAddress)
+        -- The peer is not addressable, so we generate a random address which
+        -- will pick out this socket for its lifetime.
+        1 -> do
+          theirAddress <- randomEndPointAddress
+          return (ourEndPointId, Left theirAddress)
+        _ -> throwIO (userError "handleConnectionRequest: invalid address control code")
+    addrInfo <- case mAddrInfo of
       Nothing -> throwIO (userError "handleConnectionRequest: timed out")
-      Just x -> return x
-    let ourAddress = encodeEndPointAddress (transportHost transport)
-                                           (transportPort transport)
-                                           ourEndPointId
-    (theirHost, _, _)
-      <- maybe (throwIO (userError "handleConnectionRequest: peer gave malformed address"))
-               return
-               (decodeEndPointAddress theirAddress)
+      Just info -> return info
+    (ourEndPointId, theirAddress, isRandomlyGeneratedAddr) <- case mAddrInfo of
+      Nothing -> throwIO (userError "handleConnectionRequest: timed out")
+      Just (x, Left y) -> return (x, y, True)
+      Just (x, Right y) -> return (x, y, False)
     let checkPeerHost = tcpCheckPeerHost (transportParams transport)
-    if checkPeerHost && (theirHost /= actualHost)
-    then
+    if not isRandomlyGeneratedAddr && checkPeerHost
+    then do
       -- If the OS-determined host doesn't match the host that the peer gave us,
       -- then we have no choice but to reject the connection. It's because we
       -- use the EndPointAddress to key the remote end points (localConnections)
       -- and we don't want to allow a peer to deny service to other peers by
       -- claiming to have their host and port.
-      sendMany sock $
+      (theirHost, _, _)
+        <- maybe (throwIO (userError "handleConnectionRequest: peer gave malformed address"))
+                 return
+                 (decodeEndPointAddress theirAddress)
+      unless (theirHost == actualHost) $ sendMany sock $
           encodeWord32 (encodeConnectionRequestResponse ConnectionRequestHostMismatch)
         : prependLength [BSC.pack actualHost]
     else do
       ourEndPoint <- withMVar (transportState transport) $ \st -> case st of
         TransportValid vst ->
-          case vst ^. localEndPointAt ourAddress of
+          case vst ^. localEndPointAt ourEndPointId of
             Nothing -> do
               sendMany sock [encodeWord32 (encodeConnectionRequestResponse ConnectionRequestInvalid)]
               throwIO $ userError "handleConnectionRequest: Invalid endpoint"
@@ -1363,12 +1403,13 @@ handleIncomingMessages params (ourEndPoint, theirEndPoint) = do
 -- block until that is resolved.
 --
 -- May throw a TransportError ConnectErrorCode exception.
-createConnectionTo :: TCPParameters
-                    -> LocalEndPoint
-                    -> EndPointAddress
-                    -> ConnectHints
-                    -> IO (RemoteEndPoint, LightweightConnectionId)
-createConnectionTo params ourEndPoint theirAddress hints = do
+createConnectionTo
+  :: TCPTransport
+  -> LocalEndPoint
+  -> EndPointAddress
+  -> ConnectHints
+  -> IO (RemoteEndPoint, LightweightConnectionId)
+createConnectionTo transport ourEndPoint theirAddress hints = do
     -- @timer@ is an IO action that completes when the timeout expires.
     timer <- case connTimeout of
               Just t -> do
@@ -1380,6 +1421,7 @@ createConnectionTo params ourEndPoint theirAddress hints = do
 
   where
 
+    params = transportParams transport
     connTimeout = connectTimeout hints `mplus` transportConnectTimeout params
 
     -- The second argument indicates the response obtained to the last
@@ -1400,7 +1442,7 @@ createConnectionTo params ourEndPoint theirAddress hints = do
       if isNew
         then do
           mr' <- handle (absorbAllExceptions Nothing) $
-            setupRemoteEndPoint params (ourEndPoint, theirEndPoint) connTimeout
+            setupRemoteEndPoint transport (ourEndPoint, theirEndPoint) connTimeout
           go timer (fmap ((,) theirEndPoint) mr')
         else do
           -- 'findRemoteEndPoint' will have increased 'remoteOutgoing'
@@ -1440,10 +1482,14 @@ createConnectionTo params ourEndPoint theirAddress hints = do
       return a
 
 -- | Set up a remote endpoint
-setupRemoteEndPoint :: TCPParameters -> EndPointPair -> Maybe Int
-                    -> IO (Maybe ConnectionRequestResponse)
-setupRemoteEndPoint params (ourEndPoint, theirEndPoint) connTimeout = do
-    result <- socketToEndPoint ourAddress
+setupRemoteEndPoint
+  :: TCPTransport
+  -> EndPointPair
+  -> Maybe Int
+  -> IO (Maybe ConnectionRequestResponse)
+setupRemoteEndPoint transport (ourEndPoint, theirEndPoint) connTimeout = do
+    let mOurAddress = const ourAddress <$> transportAddrInfo transport
+    result <- socketToEndPoint mOurAddress
                                theirAddress
                                (tcpReuseClientAddr params)
                                (tcpNoDelay params)
@@ -1508,6 +1554,7 @@ setupRemoteEndPoint params (ourEndPoint, theirEndPoint) connTimeout = do
       (tryCloseSocket sock `finally` putMVar socketClosed ())
     return $ either (const Nothing) (Just . (\(_,_,x) -> x)) result
   where
+    params          = transportParams transport
     ourAddress      = localAddress ourEndPoint
     theirAddress    = remoteAddress theirEndPoint
     invalidAddress  = TransportError ConnectNotFound
@@ -1654,15 +1701,19 @@ createLocalEndPoint transport qdisc = do
     modifyMVar (transportState transport) $ \st -> case st of
       TransportValid vst -> do
         let ix   = vst ^. nextEndPointId
-        let addr = encodeEndPointAddress (transportHost transport)
-                                         (transportPort transport)
-                                         ix
-        let localEndPoint = LocalEndPoint { localAddress = addr
-                                          , localQueue   = qdisc
-                                          , localState   = state
+        addr <- case transportAddrInfo transport of
+          Nothing -> randomEndPointAddress
+          Just addrInfo -> return $
+            encodeEndPointAddress (transportHost addrInfo)
+                                  (transportPort addrInfo)
+                                  ix
+        let localEndPoint = LocalEndPoint { localAddress    = addr
+                                          , localEndPointId = ix
+                                          , localQueue      = qdisc
+                                          , localState      = state
                                           }
         return ( TransportValid
-               . (localEndPointAt addr ^= Just localEndPoint)
+               . (localEndPointAt ix ^= Just localEndPoint)
                . (nextEndPointId ^= ix + 1)
                $ vst
                , localEndPoint
@@ -1703,7 +1754,7 @@ removeLocalEndPoint transport ourEndPoint =
   modifyMVar_ (transportState transport) $ \st -> case st of
     TransportValid vst ->
       return ( TransportValid
-             . (localEndPointAt (localAddress ourEndPoint) ^= Nothing)
+             . (localEndPointAt (localEndPointId ourEndPoint) ^= Nothing)
              $ vst
              )
     TransportClosed ->
@@ -1886,16 +1937,16 @@ withScheduledAction ourEndPoint f =
 -- responsible for eventually closing the socket and filling the MVar (which
 -- is empty). The MVar must be filled immediately after, and never before,
 -- the socket is closed.
-socketToEndPoint :: EndPointAddress -- ^ Our address
-                 -> EndPointAddress -- ^ Their address
-                 -> Bool            -- ^ Use SO_REUSEADDR?
-                 -> Bool            -- ^ Use TCP_NODELAY
-                 -> Bool            -- ^ Use TCP_KEEPALIVE
-                 -> Maybe Int       -- ^ Maybe TCP_USER_TIMEOUT
-                 -> Maybe Int       -- ^ Timeout for connect
+socketToEndPoint :: Maybe EndPointAddress -- ^ Our address
+                 -> EndPointAddress       -- ^ Their address
+                 -> Bool                  -- ^ Use SO_REUSEADDR?
+                 -> Bool                  -- ^ Use TCP_NODELAY
+                 -> Bool                  -- ^ Use TCP_KEEPALIVE
+                 -> Maybe Int             -- ^ Maybe TCP_USER_TIMEOUT
+                 -> Maybe Int             -- ^ Timeout for connect
                  -> IO (Either (TransportError ConnectErrorCode)
                                (MVar (), N.Socket, ConnectionRequestResponse))
-socketToEndPoint (EndPointAddress ourAddress) theirAddress reuseAddr noDelay keepAlive
+socketToEndPoint mOurAddress theirAddress reuseAddr noDelay keepAlive
                  mUserTimeout timeout =
   try $ do
     (host, port, theirEndPointId) <- case decodeEndPointAddress theirAddress of
@@ -1916,8 +1967,12 @@ socketToEndPoint (EndPointAddress ourAddress) theirAddress reuseAddr noDelay kee
         mapIOException invalidAddress $
           N.connect sock (N.addrAddress addr)
         mapIOException failed $ do
-          sendMany sock
-                   (encodeWord32 theirEndPointId : prependLength [ourAddress])
+          case mOurAddress of
+            Just (EndPointAddress ourAddress) ->
+              sendMany sock
+                (encodeWord32 theirEndPointId : encodeWord32 0 : prependLength [ourAddress])
+            Nothing ->
+              sendMany sock [encodeWord32 theirEndPointId, encodeWord32 1]
           recvWord32 sock
       case decodeConnectionRequestResponse response of
         Nothing -> throwIO (failed . userError $ "Unexpected response")
@@ -1953,11 +2008,14 @@ internalSocketBetween :: TCPTransport    -- ^ Transport
                       -> EndPointAddress -- ^ Remote endpoint
                       -> IO N.Socket
 internalSocketBetween transport ourAddress theirAddress = do
+  ourEndPointId <- case decodeEndPointAddress ourAddress of
+    Just (_, _, eid) -> return eid
+    _ -> throwIO $ userError "Malformed local EndPointAddress"
   ourEndPoint <- withMVar (transportState transport) $ \st -> case st of
       TransportClosed ->
         throwIO $ userError "Transport closed"
       TransportValid vst ->
-        case vst ^. localEndPointAt ourAddress of
+        case vst ^. localEndPointAt ourEndPointId of
           Nothing -> throwIO $ userError "Local endpoint not found"
           Just ep -> return ep
   theirEndPoint <- withMVar (localState ourEndPoint) $ \st -> case st of
@@ -1980,6 +2038,7 @@ internalSocketBetween transport ourAddress theirAddress = do
       throwIO err
     RemoteEndPointFailed err ->
       throwIO err
+  where
 
 --------------------------------------------------------------------------------
 -- Constants                                                                  --
@@ -2001,7 +2060,7 @@ firstNonReservedHeavyweightConnectionId = 1
 -- Accessor definitions                                                       --
 --------------------------------------------------------------------------------
 
-localEndPoints :: Accessor ValidTransportState (Map EndPointAddress LocalEndPoint)
+localEndPoints :: Accessor ValidTransportState (Map EndPointId LocalEndPoint)
 localEndPoints = accessor _localEndPoints (\es st -> st { _localEndPoints = es })
 
 nextEndPointId :: Accessor ValidTransportState EndPointId
@@ -2028,7 +2087,7 @@ remoteLastIncoming = accessor _remoteLastIncoming (\lcid st -> st { _remoteLastI
 remoteNextConnOutId :: Accessor ValidRemoteEndPointState LightweightConnectionId
 remoteNextConnOutId = accessor _remoteNextConnOutId (\cix st -> st { _remoteNextConnOutId = cix })
 
-localEndPointAt :: EndPointAddress -> Accessor ValidTransportState (Maybe LocalEndPoint)
+localEndPointAt :: EndPointId -> Accessor ValidTransportState (Maybe LocalEndPoint)
 localEndPointAt addr = localEndPoints >>> DAC.mapMaybe addr
 
 localConnectionTo :: EndPointAddress -> Accessor ValidLocalEndPointState (Maybe RemoteEndPoint)
