@@ -125,7 +125,7 @@ testEarlyDisconnect = do
     server :: MVar EndPointAddress -> MVar EndPointAddress -> MVar () -> IO ()
     server serverAddr clientAddr serverDone = do
       tlog "Server"
-      Right transport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+      Right transport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
       Right endpoint  <- newEndPoint transport
       putMVar serverAddr (address endpoint)
       theirAddr <- readMVar clientAddr
@@ -177,6 +177,7 @@ testEarlyDisconnect = do
       (clientPort, _) <- forkServer "127.0.0.1" "0" 5 True throwIO throwIO $ \socketFree (sock, _) -> do
         -- Initial setup
         0 <- recvWord32 sock
+        0 <- recvWord32 sock
         _ <- recvWithLength maxBound sock
         sendMany sock [encodeWord32 (encodeConnectionRequestResponse ConnectionRequestAccepted)]
 
@@ -202,7 +203,7 @@ testEarlyDisconnect = do
       putMVar clientAddr ourAddress
 
       -- Connect to the server
-      Right (_, sock, ConnectionRequestAccepted) <- readMVar serverAddr >>= \addr -> socketToEndPoint ourAddress addr True False False Nothing Nothing
+      Right (_, sock, ConnectionRequestAccepted) <- readMVar serverAddr >>= \addr -> socketToEndPoint (Just ourAddress) addr True False False Nothing Nothing
 
       -- Open a new connection
       sendMany sock [
@@ -230,7 +231,7 @@ testEarlyCloseSocket = do
     server :: MVar EndPointAddress -> MVar EndPointAddress -> MVar () -> IO ()
     server serverAddr clientAddr serverDone = do
       tlog "Server"
-      Right transport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+      Right transport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
       Right endpoint  <- newEndPoint transport
       putMVar serverAddr (address endpoint)
       theirAddr <- readMVar clientAddr
@@ -289,6 +290,7 @@ testEarlyCloseSocket = do
       (clientPort, _) <- forkServer "127.0.0.1" "0" 5 True throwIO throwIO $ \socketFree (sock, _) -> do
         -- Initial setup
         0 <- recvWord32 sock
+        0 <- recvWord32 sock
         _ <- recvWithLength maxBound sock
         sendMany sock [encodeWord32 (encodeConnectionRequestResponse ConnectionRequestAccepted)]
 
@@ -319,7 +321,7 @@ testEarlyCloseSocket = do
       putMVar clientAddr ourAddress
 
       -- Connect to the server
-      Right (_, sock, ConnectionRequestAccepted) <- readMVar serverAddr >>= \addr -> socketToEndPoint ourAddress addr True False False Nothing Nothing
+      Right (_, sock, ConnectionRequestAccepted) <- readMVar serverAddr >>= \addr -> socketToEndPoint (Just ourAddress) addr True False False Nothing Nothing
 
       -- Open a new connection
       sendMany sock [
@@ -338,13 +340,13 @@ testEarlyCloseSocket = do
 -- | Test the creation of a transport with an invalid address
 testInvalidAddress :: IO ()
 testInvalidAddress = do
-  Left _ <- createTransport "invalidHostName" "0" ((,) "invalidHostName") defaultTCPParameters
+  Left _ <- createTransport (Just ("invalidHostName", "0", (,) "invalidHostName")) defaultTCPParameters
   return ()
 
 -- | Test connecting to invalid or non-existing endpoints
 testInvalidConnect :: IO ()
 testInvalidConnect = do
-  Right transport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+  Right transport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
   Right endpoint  <- newEndPoint transport
 
   -- Syntax error in the endpoint address
@@ -375,7 +377,7 @@ testIgnoreCloseSocket = do
   clientDone <- newEmptyMVar
   serverDone <- newEmptyMVar
   connectionEstablished <- newEmptyMVar
-  Right transport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+  Right transport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
 
   -- Server
   forkTry $ do
@@ -413,7 +415,7 @@ testIgnoreCloseSocket = do
     theirAddress <- readMVar serverAddr
 
     -- Connect to the server
-    Right (_, sock, ConnectionRequestAccepted) <- socketToEndPoint ourAddress theirAddress True False False Nothing Nothing
+    Right (_, sock, ConnectionRequestAccepted) <- socketToEndPoint (Just ourAddress) theirAddress True False False Nothing Nothing
     putMVar connectionEstablished ()
 
     -- Server connects to us, and then closes the connection
@@ -465,7 +467,7 @@ testBlockAfterCloseSocket = do
   clientDone <- newEmptyMVar
   serverDone <- newEmptyMVar
   connectionEstablished <- newEmptyMVar
-  Right transport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+  Right transport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
 
   -- Server
   forkTry $ do
@@ -499,7 +501,7 @@ testBlockAfterCloseSocket = do
     theirAddress <- readMVar serverAddr
 
     -- Connect to the server
-    Right (_, sock, ConnectionRequestAccepted) <- socketToEndPoint ourAddress theirAddress True False False Nothing Nothing
+    Right (_, sock, ConnectionRequestAccepted) <- socketToEndPoint (Just ourAddress) theirAddress True False False Nothing Nothing
     putMVar connectionEstablished ()
 
     -- Server connects to us, and then closes the connection
@@ -545,7 +547,7 @@ testUnnecessaryConnect numThreads = do
   serverAddr <- newEmptyMVar
 
   forkTry $ do
-    Right transport <- createTransport "127.0.0.1" "0" ((,) "128.0.0.1") defaultTCPParameters
+    Right transport <- createTransport (Just ("127.0.0.1", "0", (,) "128.0.0.1")) defaultTCPParameters
     Right endpoint <- newEndPoint transport
     -- Since we're lying about the server's address, we have to manually
     -- construct the proper address. If we used its actual address, the clients
@@ -565,7 +567,7 @@ testUnnecessaryConnect numThreads = do
       forkTry $ do
         -- It is possible that the remote endpoint just rejects the request by closing the socket
         -- immediately (depending on far the remote endpoint got with the initialization)
-        response <- readMVar serverAddr >>= \addr -> socketToEndPoint ourAddress addr True False False Nothing Nothing
+        response <- readMVar serverAddr >>= \addr -> socketToEndPoint (Just ourAddress) addr True False False Nothing Nothing
         case response of
           Right (_, _, ConnectionRequestAccepted) ->
             -- We don't close this socket because we want to keep this connection open
@@ -589,11 +591,11 @@ testUnnecessaryConnect numThreads = do
 -- | Test that we can create "many" transport instances
 testMany :: IO ()
 testMany = do
-  Right masterTransport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+  Right masterTransport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
   Right masterEndPoint  <- newEndPoint masterTransport
 
   replicateM_ 10 $ do
-    mTransport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+    mTransport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
     case mTransport of
       Left ex -> do
         putStrLn $ "IOException: " ++ show ex ++ "; errno = " ++ show (ioe_errno ex)
@@ -610,10 +612,11 @@ testMany = do
 -- | Test what happens when the transport breaks completely
 testBreakTransport :: IO ()
 testBreakTransport = do
-  Right (transport, internals) <- createTransportExposeInternals "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+  Right (transport, internals) <- createTransportExposeInternals (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
   Right endpoint <- newEndPoint transport
 
-  killThread (transportThread internals) -- Uh oh
+  let Just tid = transportThread internals
+  killThread tid -- Uh oh
 
   ErrorEvent (TransportError EventTransportFailed _) <- receive endpoint
 
@@ -646,6 +649,7 @@ testReconnect = do
   -- Server
   (serverPort, _) <- forkServer "127.0.0.1" "0" 5 True throwIO throwIO $ \socketFree (sock, _) -> do
     -- Accept the connection
+    Right 0  <- tryIO $ recvWord32 sock
     Right 0  <- tryIO $ recvWord32 sock
     Right _  <- tryIO $ recvWithLength maxBound sock
 
@@ -686,7 +690,7 @@ testReconnect = do
 
   -- Client
   forkTry $ do
-    Right transport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+    Right transport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
     Right endpoint  <- newEndPoint transport
     let theirAddr = encodeEndPointAddress "127.0.0.1" serverPort 0
 
@@ -773,6 +777,7 @@ testUnidirectionalError = do
     -- would shutdown the socket in the other direction)
     void . (try :: IO () -> IO (Either SomeException ())) $ do
       0 <- recvWord32 sock
+      0 <- recvWord32 sock
       _ <- recvWithLength maxBound sock
       () <- sendMany sock [encodeWord32 (encodeConnectionRequestResponse ConnectionRequestAccepted)]
 
@@ -790,7 +795,7 @@ testUnidirectionalError = do
 
   -- Client
   forkTry $ do
-    Right (transport, internals) <- createTransportExposeInternals "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+    Right (transport, internals) <- createTransportExposeInternals (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
     Right endpoint <- newEndPoint transport
     let theirAddr = encodeEndPointAddress "127.0.0.1" serverPort 0
 
@@ -845,7 +850,7 @@ testUnidirectionalError = do
 
 testInvalidCloseConnection :: IO ()
 testInvalidCloseConnection = do
-  Right (transport, internals) <- createTransportExposeInternals "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+  Right (transport, internals) <- createTransportExposeInternals (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
   serverAddr <- newEmptyMVar
   clientDone <- newEmptyMVar
   serverDone <- newEmptyMVar
@@ -887,10 +892,10 @@ testUseRandomPort :: IO ()
 testUseRandomPort = do
    testDone <- newEmptyMVar
    forkTry $ do
-     Right transport1 <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+     Right transport1 <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
      Right ep1        <- newEndPoint transport1
      -- Same as transport1, but is strict in the port.
-     Right transport2 <- createTransport "127.0.0.1" "0" (\(!port) -> ("127.0.0.1", port)) defaultTCPParameters
+     Right transport2 <- createTransport (Just ("127.0.0.1", "0", \(!port) -> ("127.0.0.1", port))) defaultTCPParameters
      Right ep2        <- newEndPoint transport2
      Right conn1 <- connect ep2 (address ep1) ReliableOrdered defaultConnectHints
      ConnectionOpened _ _ _ <- receive ep1
@@ -903,7 +908,7 @@ testUseRandomPort = do
 testMaxLength :: IO ()
 testMaxLength = do
 
-  Right serverTransport <- createTransport "127.0.0.1" "9998" ((,) "127.0.0.1") $ defaultTCPParameters {
+  Right serverTransport <- createTransport (Just ("127.0.0.1", "9998", (,) "127.0.0.1")) $ defaultTCPParameters {
       -- 17 bytes should fit every valid address at 127.0.0.1.
       -- Port is at most 5 bytes (65536) and id is a base-10 Word32 so
       -- at most 10 bytes. We'll have one client with a 5-byte port to push it
@@ -911,8 +916,8 @@ testMaxLength = do
       tcpMaxAddressLength = 16
     , tcpMaxReceiveLength = 8
     }
-  Right goodClientTransport <- createTransport "127.0.0.1" "9999" ((,) "127.0.0.1") defaultTCPParameters
-  Right badClientTransport <- createTransport "127.0.0.1" "10000" ((,) "127.0.0.1") defaultTCPParameters
+  Right goodClientTransport <- createTransport (Just ("127.0.0.1", "9999", (,) "127.0.0.1")) defaultTCPParameters
+  Right badClientTransport <- createTransport (Just ("127.0.0.1", "10000", (,) "127.0.0.1")) defaultTCPParameters
 
   serverAddress <- newEmptyMVar
   testDone <- newEmptyMVar
@@ -975,7 +980,7 @@ testCloseEndPoint = do
   -- A server which accepts one connection and then attempts to close the
   -- end point.
   forkTry $ do
-    Right transport <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters
+    Right transport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
     Right ep <- newEndPoint transport
     putMVar serverAddress (address ep)
     ConnectionOpened _ _ _ <- receive ep
@@ -993,6 +998,7 @@ testCloseEndPoint = do
         -- Version 0x00000000 handshake data.
         v0handshake = [
             encodeWord32 endPointId
+          , encodeWord32 0
           , encodeWord32 (fromIntegral (BS.length endPointAddress))
           , endPointAddress
           ]
@@ -1019,10 +1025,10 @@ testCheckPeerHost :: IO ()
 testCheckPeerHost = do
 
   let params = defaultTCPParameters { tcpCheckPeerHost = True }
-  Right transport1 <- createTransport "127.0.0.1" "0" ((,) "127.0.0.1") params
+  Right transport1 <- createTransport (defaultTCPAddr "127.0.0.1" "0") params
   -- This transport claims 127.0.0.2 as its host, but connections from it to
   -- an EndPoint on transport1 will show 127.0.0.1 as the socket's source host.
-  Right transport2 <- createTransport "127.0.0.1" "0" ((,) "127.0.0.2") defaultTCPParameters
+  Right transport2 <- createTransport (Addressable (TCPAddrInfo "127.0.0.1" "0" ((,) "127.0.0.2"))) defaultTCPParameters
 
   Right ep1 <- newEndPoint transport1
   Right ep2 <- newEndPoint transport2
@@ -1033,6 +1039,19 @@ testCheckPeerHost = do
     <- return err
 
   return ()
+
+testUnreachableSelfConnect :: IO ()
+testUnreachableSelfConnect = do
+  Right transport <- createTransport Nothing defaultTCPParameters
+  Right ep <- newEndPoint transport
+  Right conn <- connect ep (address ep) ReliableOrdered defaultConnectHints
+  ConnectionOpened connid ReliableOrdered _ <- receive ep
+  Right () <- send conn ["ping"]
+  Received connid' bytes <- receive ep
+  _ <- close conn
+  ConnectionClosed connid'' <- receive ep
+  closeEndPoint ep
+  closeTransport transport
 
 main :: IO ()
 main = do
@@ -1053,10 +1072,11 @@ main = do
            , ("MaxLength",              testMaxLength)
            , ("CloseEndPoint",          testCloseEndPoint)
            , ("CheckPeerHost",          testCheckPeerHost)
+           , ("UnreachableSelfConnect", testUnreachableSelfConnect)
            ]
   -- Run the generic tests even if the TCP specific tests failed..
   testTransport (either (Left . show) (Right) <$>
-    createTransport "127.0.0.1" "0" ((,) "127.0.0.1") defaultTCPParameters)
+    createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters)
   -- ..but if the generic tests pass, still fail if the specific tests did not
   case tcpResult of
     Left err -> throwIO err
