@@ -1040,6 +1040,8 @@ testCheckPeerHost = do
 
   return ()
 
+-- | Test that an unreachable EndPoint can use its own address to connect
+-- to itself.
 testUnreachableSelfConnect :: IO ()
 testUnreachableSelfConnect = do
   Right transport <- createTransport Nothing defaultTCPParameters
@@ -1053,6 +1055,13 @@ testUnreachableSelfConnect = do
   closeEndPoint ep
   closeTransport transport
 
+-- | Test that
+--
+-- 1. Connecting to an unreachable EndPoint's address gives ConnectFailed
+-- 2. An unreachable EndPoint can successfully connect to a reachable EndPoint
+-- 3. The address given in the ConnectionOpened event at the reachable EndPoint
+--    can be used to connect to the unreachable EndPoint, so long as there is
+--    at least one lightweight connection open between the two.
 testUnreachableConnect :: IO ()
 testUnreachableConnect = do
   Right rtransport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
