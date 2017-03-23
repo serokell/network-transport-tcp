@@ -1041,6 +1041,32 @@ testUnreachableSelfConnect = do
   closeEndPoint ep
   closeTransport transport
 
+testUnreachableConnect :: IO ()
+testUnreachableConnect = do
+  Right rtransport <- createTransport (Just ("127.0.0.1", "0", (,) "127.0.0.1")) defaultTCPParameters
+  Right utransport <- createTransport Nothing defaultTCPParameters
+  Right rep <- newEndPoint rtransport
+  Right uep <- newEndPoint utransport
+  -- Reachable endpoint connects to the unreachable endpoint, but it fails.
+  -- NB ConnectNotFound isn't the error; that would mean the address makes
+  -- sense but the host could not be found.
+  Left (TransportError ConnectFailed _) <- connect rep (address uep) ReliableOrdered defaultConnectHints
+  -- Unreachable endpoint connects to the reachable endpoint.
+  Right conn <- connect uep (address rep) ReliableOrdered defaultConnectHints
+  -- Reachable endpoint now has an address at which it can connect to the
+  -- unreachable
+  ConnectionOpened _ _ addr <- receive rep
+  Right conn' <- connect rep addr ReliableOrdered defaultConnectHints
+  ConnectionOpened _ _ addr' <- receive uep
+  close conn
+  ConnectionClosed _ <- receive rep
+  close conn'
+  ConnectionClosed _ <- receive uep
+  closeEndPoint rep
+  closeEndPoint uep
+  closeTransport rtransport
+  closeTransport utransport
+
 main :: IO ()
 main = do
   tcpResult <- tryIO $ runTests
@@ -1061,6 +1087,7 @@ main = do
            , ("CloseEndPoint",          testCloseEndPoint)
            , ("CheckPeerHost",          testCheckPeerHost)
            , ("UnreachableSelfConnect", testUnreachableSelfConnect)
+           , ("UnreachableConnect",     testUnreachableConnect)
            ]
   -- Run the generic tests even if the TCP specific tests failed..
   testTransport (either (Left . show) (Right) <$>
