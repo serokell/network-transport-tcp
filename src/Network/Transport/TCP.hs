@@ -18,6 +18,9 @@
 module Network.Transport.TCP
   ( -- * Main API
     createTransport
+  , TCPAddr(..)
+  , defaultTCPAddr
+  , TCPAddrInfo(..)
   , TCPParameters(..)
   , defaultTCPParameters
     -- * Internals (exposed for unit tests)
@@ -476,6 +479,28 @@ type LightweightConnectionId = Word32
 -- 'LightweightConnectionId'.
 type HeavyweightConnectionId = Word32
 
+-- | A transport which is addressable from the network must give a host/port
+-- on which to bind/listen, and determine its external address (host/port) from
+-- the actual port (which may not be known, in case 0 is used for the bind
+-- port).
+data TCPAddrInfo = TCPAddrInfo {
+    tcpBindHost :: N.HostName
+  , tcpBindPort :: N.ServiceName
+  , tcpExternalAddress :: N.ServiceName -> (N.HostName, N.ServiceName)
+  }
+
+-- | Addressability of a transport. If your transport cannot be connected
+-- to, for instance because it runs behind NAT, use Unaddressable.
+data TCPAddr = Addressable TCPAddrInfo | Unaddressable
+
+-- | The bind and external host/port are the same.
+defaultTCPAddr :: N.HostName -> N.ServiceName -> TCPAddr
+defaultTCPAddr host port = Addressable $ TCPAddrInfo {
+    tcpBindHost = host
+  , tcpBindPort = port
+  , tcpExternalAddress = (,) host
+  }
+
 -- | Parameters for setting up the TCP transport
 data TCPParameters = TCPParameters {
     -- | Backlog for 'listen'.
@@ -543,32 +568,32 @@ data TransportInternals = TransportInternals
 
 -- | Create a TCP transport
 createTransport
-  :: Maybe (N.HostName, N.ServiceName, N.ServiceName -> (N.HostName, N.ServiceName))
+  :: TCPAddr
   -> TCPParameters
   -> IO (Either IOException Transport)
-createTransport addrInfo params =
-  either Left (Right . fst) <$> createTransportExposeInternals addrInfo params
+createTransport addr params =
+  either Left (Right . fst) <$> createTransportExposeInternals addr params
 
 -- | You should probably not use this function (used for unit testing only)
 createTransportExposeInternals
-  :: Maybe (N.HostName, N.ServiceName, N.ServiceName -> (N.HostName, N.ServiceName))
+  :: TCPAddr
   -> TCPParameters
   -> IO (Either IOException (Transport, TransportInternals))
-createTransportExposeInternals addrInfo params = do
+createTransportExposeInternals addr params = do
     state <- newMVar . TransportValid $ ValidTransportState
       { _localEndPoints = Map.empty
       , _nextEndPointId = 0
       }
-    case addrInfo of
+    case addr of
 
-      Nothing ->
+      Unaddressable ->
         let transport = TCPTransport { transportState    = state
                                      , transportAddrInfo = Nothing
                                      , transportParams   = params
                                      }
         in  fmap Right (mkTransport transport Nothing)
 
-      Just (bindHost, bindPort, mkExternal) -> tryIO $ mdo
+      Addressable (TCPAddrInfo bindHost bindPort mkExternal) -> tryIO $ mdo
         when ( isJust (tcpUserTimeout params) &&
                not (N.isSupportedSocketOption N.UserTimeout)
              ) $
