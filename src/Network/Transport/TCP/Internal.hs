@@ -100,7 +100,7 @@ import qualified Data.ByteString as BS (length, concat, null)
 import Data.ByteString.Lazy.Internal (smallChunkSize)
 import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Char8 as BSC (unpack, pack)
-import Data.ByteString.Builder (word64BE, toLazyByteString)
+import Data.ByteString.Lazy.Builder (word64BE, toLazyByteString)
 import Data.Monoid ((<>))
 import System.Random.MWC
 
