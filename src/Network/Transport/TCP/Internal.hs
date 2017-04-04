@@ -102,7 +102,8 @@ import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Char8 as BSC (unpack, pack)
 import Data.ByteString.Lazy.Builder (word64BE, toLazyByteString)
 import Data.Monoid ((<>))
-import System.Random.MWC
+import qualified Data.UUID as UUID
+import qualified Data.UUID.V4 as UUID
 
 -- | Local identifier for an endpoint within this transport
 type EndPointId = Word32
@@ -186,12 +187,8 @@ encodeConnectionRequestResponse crr = case crr of
 -- addresses when such endpoints establish new heavyweight connections.
 randomEndPointAddress :: IO EndPointAddress
 randomEndPointAddress = do
-  (w64a, w64b) <- withSystemRandom $ \gen -> do
-    w64a <- uniform gen :: IO Word64
-    w64b <- uniform gen :: IO Word64
-    return (w64a, w64b)
-  let bs = toStrict . toLazyByteString $ word64BE w64a <> word64BE w64b
-  return $ EndPointAddress bs
+  uuid <- UUID.nextRandom
+  return $ EndPointAddress (UUID.toASCIIBytes uuid)
 
 -- | Start a server at the specified address.
 --
