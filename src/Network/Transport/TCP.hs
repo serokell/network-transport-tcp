@@ -1004,21 +1004,26 @@ handleConnectionRequest transport socketClosed (sock, sockAddr) = handle handleE
       Just (x, Left y) -> return (x, y, True)
       Just (x, Right y) -> return (x, y, False)
     let checkPeerHost = tcpCheckPeerHost (transportParams transport)
-    if not isRandomlyGeneratedAddr && checkPeerHost
-    then do
-      -- If the OS-determined host doesn't match the host that the peer gave us,
-      -- then we have no choice but to reject the connection. It's because we
-      -- use the EndPointAddress to key the remote end points (localConnections)
-      -- and we don't want to allow a peer to deny service to other peers by
-      -- claiming to have their host and port.
-      (theirHost, _, _)
-        <- maybe (throwIO (userError "handleConnectionRequest: peer gave malformed address"))
-                 return
-                 (decodeEndPointAddress theirAddress)
-      unless (theirHost == actualHost) $ sendMany sock $
-          encodeWord32 (encodeConnectionRequestResponse ConnectionRequestHostMismatch)
-        : prependLength [BSC.pack actualHost]
-    else do
+    continue <-
+      if not isRandomlyGeneratedAddr && checkPeerHost
+      then do
+        -- If the OS-determined host doesn't match the host that the peer gave us,
+        -- then we have no choice but to reject the connection. It's because we
+        -- use the EndPointAddress to key the remote end points (localConnections)
+        -- and we don't want to allow a peer to deny service to other peers by
+        -- claiming to have their host and port.
+        (theirHost, _, _)
+          <- maybe (throwIO (userError "handleConnectionRequest: peer gave malformed address"))
+                   return
+                   (decodeEndPointAddress theirAddress)
+        if theirHost == actualHost
+        then return True
+        else do sendMany sock $
+                    encodeWord32 (encodeConnectionRequestResponse ConnectionRequestHostMismatch)
+                  : prependLength [BSC.pack actualHost]
+                return False
+      else return True
+    when continue $ do
       ourEndPoint <- withMVar (transportState transport) $ \st -> case st of
         TransportValid vst ->
           case vst ^. localEndPointAt ourEndPointId of
