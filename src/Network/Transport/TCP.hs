@@ -501,6 +501,10 @@ data TCPParameters = TCPParameters {
     -- connection will go down. The peer and the local node will get an
     -- EventConnectionLost.
   , tcpMaxReceiveLength :: Word32
+    -- | What to do if there's an exception when accepting a new TCP
+    -- connection. Throwing an exception here will cause the server to
+    -- terminate.
+  , tcpServerExceptionHandler :: SomeException -> IO ()
   }
 
 -- | Internal functionality we expose for unit testing
@@ -591,7 +595,7 @@ createTransportExposeInternals bindHost bindPort mkExternal params = do
         )
 
     errorHandler :: TCPTransport -> SomeException -> IO ()
-    errorHandler _ = throwIO
+    errorHandler _ = tcpServerExceptionHandler params
 
     terminationHandler :: TCPTransport -> SomeException -> IO ()
     terminationHandler transport ex = do
@@ -613,6 +617,7 @@ defaultTCPParameters = TCPParameters {
   , transportConnectTimeout = Nothing
   , tcpMaxAddressLength = maxBound
   , tcpMaxReceiveLength = maxBound
+  , tcpServerExceptionHandler = throwIO
   }
 
 --------------------------------------------------------------------------------
