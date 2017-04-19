@@ -149,7 +149,7 @@ import Control.Exception
   )
 import Data.IORef (IORef, newIORef, writeIORef, readIORef, writeIORef)
 import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS (concat)
+import qualified Data.ByteString as BS (concat, length, null)
 import qualified Data.ByteString.Char8 as BSC (pack, unpack)
 import Data.Bits (shiftL, (.|.))
 import Data.Maybe (isJust)
@@ -171,7 +171,6 @@ import Data.Accessor (Accessor, accessor, (^.), (^=), (^:))
 import qualified Data.Accessor.Container as DAC (mapMaybe)
 import Data.Foldable (forM_, mapM_)
 import qualified System.Timeout (timeout)
-import qualified Data.ByteString as BS (length)
 
 -- $design
 --
@@ -1011,52 +1010,35 @@ handleConnectionRequest transport socketClosed (sock, sockAddr) = handle handleE
       addrInfo <- do
         ourEndPointId <- recvWord32 sock
         let maxAddressLength = tcpMaxAddressLength $ transportParams transport
-        addressControlCode <- recvWord32 sock
-        case addressControlCode of
-          0 -> do
-            -- Let the peer tell us their EndPointAddress.
-            let maxAddressLength = tcpMaxAddressLength $ transportParams transport
-            theirAddress <- EndPointAddress . BS.concat <$>
-              recvWithLength maxAddressLength sock
-            (theirHost, theirPort, theirEndPointId)
-              <- maybe (throwIO (userError "handleConnectionRequest: peer gave malformed address"))
-                       return
-                       (decodeEndPointAddress theirAddress)
-            -- If the OS-determined host doesn't match the host that the peer gave us,
-            -- then we have no choice but to reject the connection. It's because we
-            -- use the EndPointAddress to key the remote end points (localConnections)
-            -- and we don't want to allow a peer to deny service to other peers by
-            -- claiming to have their host and port.
-            return (ourEndPointId, Right theirAddress)
-          -- The peer is not addressable, so we generate a random address which
-          -- will pick out this socket for its lifetime.
-          1 -> do
-            theirAddress <- randomEndPointAddress
-            return (ourEndPointId, Left theirAddress)
-          _ -> throwIO (userError "handleConnectionRequest: invalid address control code")
-      (ourEndPointId, theirAddress, isRandomlyGeneratedAddr) <- case addrInfo of
-        (x, Left y) -> return (x, y, True)
-        (x, Right y) -> return (x, y, False)
+        mTheirAddress <- BS.concat <$> recvWithLength maxAddressLength sock
+        -- Sending a length = 0 address means unaddressable.
+        if BS.null mTheirAddress
+        then fmap ((,) ourEndPointId . Left) randomEndPointAddress
+        else do
+          let theirAddress = EndPointAddress mTheirAddress
+          (theirHost, theirPort, theirEndPointId)
+            <- maybe (throwIO (userError "handleConnectionRequest: peer gave malformed address"))
+                     return
+                     (decodeEndPointAddress theirAddress)
+          return (ourEndPointId, Right (theirAddress, (theirHost, theirPort, theirEndPointId)))
+      (ourEndPointId, theirAddress, peerHost) <- case addrInfo of
+        (x, Left y) -> return (x, y, Nothing)
+        (x, Right (y, (h, _, _))) -> return (x, y, Just h)
       let checkPeerHost = tcpCheckPeerHost (transportParams transport)
-      continue <-
-        if not isRandomlyGeneratedAddr && checkPeerHost
-        then do
+      continue <- case (peerHost, checkPeerHost) of
+        (Just theirHost, True) -> do
           -- If the OS-determined host doesn't match the host that the peer gave us,
           -- then we have no choice but to reject the connection. It's because we
           -- use the EndPointAddress to key the remote end points (localConnections)
           -- and we don't want to allow a peer to deny service to other peers by
           -- claiming to have their host and port.
-          (theirHost, _, _)
-            <- maybe (throwIO (userError "handleConnectionRequest: peer gave malformed address"))
-                     return
-                     (decodeEndPointAddress theirAddress)
           if theirHost == actualHost
           then return True
           else do sendMany sock $
                       encodeWord32 (encodeConnectionRequestResponse ConnectionRequestHostMismatch)
                     : prependLength [BSC.pack actualHost]
                   return False
-        else return True
+        _ -> return True
       if continue
       then do
         ourEndPoint <- withMVar (transportState transport) $ \st -> case st of
@@ -1076,6 +1058,7 @@ handleConnectionRequest transport socketClosed (sock, sockAddr) = handle handleE
 
       go :: LocalEndPoint -> EndPointAddress -> IO ()
       go ourEndPoint theirAddress = handle handleException $ do
+
         resetIfBroken ourEndPoint theirAddress
         (theirEndPoint, isNew) <-
           findRemoteEndPoint ourEndPoint theirAddress RequestedByThem Nothing
@@ -2048,11 +2031,11 @@ socketToEndPoint mOurAddress theirAddress reuseAddr noDelay keepAlive
             Just (EndPointAddress ourAddress) ->
               sendMany sock $
                   encodeWord32 currentProtocolVersion
-                : prependLength (encodeWord32 theirEndPointId : encodeWord32 0 : prependLength [ourAddress])
+                : prependLength (encodeWord32 theirEndPointId : prependLength [ourAddress])
             Nothing ->
               sendMany sock $
                   encodeWord32 currentProtocolVersion
-                : prependLength ([encodeWord32 theirEndPointId, encodeWord32 1])
+                : prependLength ([encodeWord32 theirEndPointId, encodeWord32 0])
           recvWord32 sock
       case decodeConnectionRequestResponse response of
         Nothing -> throwIO (failed . userError $ "Unexpected response")

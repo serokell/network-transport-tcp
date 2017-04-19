@@ -180,7 +180,6 @@ testEarlyDisconnect = do
       (clientPort, _) <- forkServer "127.0.0.1" "0" 5 True throwIO throwIO $ \socketFree (sock, _) -> do
         -- Initial setup
         0 <- recvWord32 sock
-        0 <- recvWord32 sock
         _ <- recvWithLength maxBound sock
         sendMany sock [encodeWord32 (encodeConnectionRequestResponse ConnectionRequestAccepted)]
 
@@ -292,7 +291,6 @@ testEarlyCloseSocket = do
       -- Listen for incoming messages
       (clientPort, _) <- forkServer "127.0.0.1" "0" 5 True throwIO throwIO $ \socketFree (sock, _) -> do
         -- Initial setup
-        0 <- recvWord32 sock
         0 <- recvWord32 sock
         _ <- recvWithLength maxBound sock
         sendMany sock [encodeWord32 (encodeConnectionRequestResponse ConnectionRequestAccepted)]
@@ -653,7 +651,6 @@ testReconnect = do
   (serverPort, _) <- forkServer "127.0.0.1" "0" 5 True throwIO throwIO $ \socketFree (sock, _) -> do
     -- Accept the connection
     Right 0  <- tryIO $ recvWord32 sock
-    Right 0  <- tryIO $ recvWord32 sock
     Right _  <- tryIO $ recvWithLength maxBound sock
 
     -- The first time we close the socket before accepting the logical connection
@@ -779,7 +776,6 @@ testUnidirectionalError = do
     -- fail, but we don't want to close that socket at that point (which
     -- would shutdown the socket in the other direction)
     void . (try :: IO () -> IO (Either SomeException ())) $ do
-      0 <- recvWord32 sock
       0 <- recvWord32 sock
       _ <- recvWithLength maxBound sock
       () <- sendMany sock [encodeWord32 (encodeConnectionRequestResponse ConnectionRequestAccepted)]
@@ -1001,7 +997,6 @@ testCloseEndPoint = do
         -- Version 0x00000000 handshake data.
         v0handshake = [
             encodeWord32 endPointId
-          , encodeWord32 0
           , encodeWord32 (fromIntegral (BS.length endPointAddress))
           , endPointAddress
           ]
