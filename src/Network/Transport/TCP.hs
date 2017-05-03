@@ -993,10 +993,9 @@ handleConnectionRequest transport socketClosed (sock, sockAddr) = handle handleE
     addrInfo <- case mAddrInfo of
       Nothing -> throwIO (userError "handleConnectionRequest: timed out")
       Just info -> return info
-    (ourEndPointId, theirAddress, peerHost) <- case mAddrInfo of
-      Nothing -> throwIO (userError "handleConnectionRequest: timed out")
-      Just (x, Left y) -> return (x, y, Nothing)
-      Just (x, Right (y, (h, _, _))) -> return (x, y, Just h)
+    (ourEndPointId, theirAddress, peerHost) <- case addrInfo of
+      (x, Left y) -> return (x, y, Nothing)
+      (x, Right (y, (h, _, _))) -> return (x, y, Just h)
     let checkPeerHost = tcpCheckPeerHost (transportParams transport)
     continue <- case (peerHost, checkPeerHost) of
       (Just theirHost, True) -> do
