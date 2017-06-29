@@ -62,7 +62,7 @@ import Network.Transport.TCP.Internal
   , encodeWord32
   , tryCloseSocket
   , tryShutdownSocketBoth
-  , decodeSockAddr
+  , resolveSockAddr
   , EndPointId
   , encodeEndPointAddress
   , decodeEndPointAddress
@@ -1008,8 +1008,8 @@ handleConnectionRequest transport socketClosed (sock, sockAddr) = handle handleE
     handleConnectionRequestV0 :: (N.Socket, N.SockAddr) -> IO (Maybe (IO ()))
     handleConnectionRequestV0 (sock, sockAddr) = do
       -- Get the OS-determined host and port.
-      (actualHost, actualPort) <-
-        decodeSockAddr sockAddr >>=
+      (numericHost, resolvedHost, actualPort) <-
+        resolveSockAddr sockAddr >>=
           maybe (throwIO (userError "handleConnectionRequest: invalid socket address")) return
       -- The peer must send our identifier and their address promptly, if a
       -- timeout is set.
@@ -1038,11 +1038,11 @@ handleConnectionRequest transport socketClosed (sock, sockAddr) = handle handleE
           -- use the EndPointAddress to key the remote end points (localConnections)
           -- and we don't want to allow a peer to deny service to other peers by
           -- claiming to have their host and port.
-          if theirHost == actualHost
+          if theirHost == resolvedHost || theirHost == numericHost
           then return True
           else do sendMany sock $
                       encodeWord32 (encodeConnectionRequestResponse ConnectionRequestHostMismatch)
-                    : prependLength [BSC.pack actualHost]
+                    : (prependLength [BSC.pack theirHost] ++ prependLength [BSC.pack numericHost] ++ prependLength [BSC.pack resolvedHost])
                   return False
         _ -> return True
       if continue
@@ -1603,8 +1603,19 @@ setupRemoteEndPoint transport (ourEndPoint, theirEndPoint) connTimeout = do
         let handler :: SomeException -> IO (TransportError ConnectErrorCode)
             handler err = return (TransportError ConnectFailed (show err))
         err <- handle handler $ do
-          actualHost <- recvWithLength (tcpMaxReceiveLength params) sock
-          return (TransportError ConnectFailed ("setupRemoteEndPoint: Host mismatch " ++ BSC.unpack (BS.concat actualHost)))
+          claimedHost <- recvWithLength (tcpMaxReceiveLength params) sock
+          actualNumericHost <- recvWithLength (tcpMaxReceiveLength params) sock
+          actualResolvedHost <- recvWithLength (tcpMaxReceiveLength params) sock
+          let reason = concat [
+                  "setupRemoteEndPoint: Host mismatch"
+                , ". Claimed: "
+                , BSC.unpack (BS.concat claimedHost)
+                , "; Numeric: "
+                , BSC.unpack (BS.concat actualNumericHost)
+                , "; Resolved: "
+                , BSC.unpack (BS.concat actualResolvedHost)
+                ]
+          return (TransportError ConnectFailed reason)
         resolveInit (ourEndPoint, theirEndPoint) (RemoteEndPointInvalid err)
         tryCloseSocket sock `finally` putMVar socketClosedVar ()
         return Nothing

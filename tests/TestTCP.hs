@@ -1019,8 +1019,8 @@ testCloseEndPoint = do
 
 -- | Ensure that if the peer's claimed host doesn't match its actual host,
 --   the connection is rejected (when tcpCheckPeerHost is enabled).
-testCheckPeerHost :: IO ()
-testCheckPeerHost = do
+testCheckPeerHostReject :: IO ()
+testCheckPeerHostReject = do
 
   let params = defaultTCPParameters { tcpCheckPeerHost = True }
   Right transport1 <- createTransport (defaultTCPAddr "127.0.0.1" "0") params
@@ -1033,8 +1033,27 @@ testCheckPeerHost = do
 
   Left err <- connect ep2 (address ep1) ReliableOrdered defaultConnectHints
 
-  TransportError ConnectFailed "setupRemoteEndPoint: Host mismatch 127.0.0.1"
-    <- return err
+  TransportError ConnectFailed _ <- return err
+
+  return ()
+
+-- | Ensure that if peer host checking works through name resolution: if the
+--   peer claims "localhost", and connects to a transport also on localhost,
+--   it should be accepted.
+testCheckPeerHostResolve :: IO ()
+testCheckPeerHostResolve = do
+
+  let params = defaultTCPParameters { tcpCheckPeerHost = True }
+  Right transport1 <- createTransport (defaultTCPAddr "127.0.0.1" "0") params
+  -- EndPoints on this transport have addresses with "localhost" host part.
+  Right transport2 <- createTransport (Addressable (TCPAddrInfo "127.0.0.1" "0" ((,) "localhost"))) defaultTCPParameters
+
+  Right ep1 <- newEndPoint transport1
+  Right ep2 <- newEndPoint transport2
+
+  Right conn <- connect ep2 (address ep1) ReliableOrdered defaultConnectHints
+
+  close conn
 
   return ()
 
@@ -1104,9 +1123,10 @@ main = do
            , ("InvalidCloseConnection", testInvalidCloseConnection)
            , ("MaxLength",              testMaxLength)
            , ("CloseEndPoint",          testCloseEndPoint)
-           , ("CheckPeerHost",          testCheckPeerHost)
            , ("UnreachableSelfConnect", testUnreachableSelfConnect)
            , ("UnreachableConnect",     testUnreachableConnect)
+           , ("CheckPeerHostReject",    testCheckPeerHostReject)
+           , ("CheckPeerHostResolve",   testCheckPeerHostResolve)
            ]
   -- Run the generic tests even if the TCP specific tests failed..
   testTransport (either (Left . show) (Right) <$>
